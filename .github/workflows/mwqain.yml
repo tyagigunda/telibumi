@@ -1,0 +1,78 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Configure RDP & Enable User
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          
+          # Set runneradmin Password safely
+          $password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $password
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installer -Force
+
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          
+          # --accept-routes & authkey connect
+          & $tailscale up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="gta-stream-rdp" --accept-routes
+          
+          $tsIP = $null
+          for ($i = 1; $i -le 15; $i++) {
+            Start-Sleep -Seconds 3
+            $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1)
+            if ($tsIP) { 
+              $tsIP = $tsIP.Trim()
+              break 
+            }
+          }
+
+          if (-not $tsIP) {
+            Write-Error "Tailscale IP nahi mila!"
+            exit 1
+          }
+
+          "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Show RDP Details
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "       INFINITE RDP - TAILSCALE" -ForegroundColor Cyan
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "Address  : $env:TAILSCALE_IP" -ForegroundColor Yellow
+          Write-Host "Username : runneradmin" -ForegroundColor Yellow
+          Write-Host "Password : P@ssw0rd!" -ForegroundColor Yellow
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host ""
+
+      - name: Keep RDP Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] INFINITE RDP is active and running..."
+            Start-Sleep -Seconds 300
+          }
